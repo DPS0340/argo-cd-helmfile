@@ -202,6 +202,10 @@ if [[ "${HELMFILE_INIT_SCRIPT_FILE}" ]]; then
   HELMFILE_INIT_SCRIPT_FILE=$(variable_expansion "${HELMFILE_INIT_SCRIPT_FILE}")
 fi
 
+if [[ -z "${HELMFILE_CUSTOM_TEMPLATE_SCRIPT}" ]]; then
+  HELMFILE_CUSTOM_TEMPLATE_SCRIPT="preprocess-helmfile-template"
+fi
+
 : "${HELMFILE_ENV_FILE:=".argo-cd-helmfile-env"}"
 if [[ "${HELMFILE_ENV_FILE}" ]]; then
   HELMFILE_ENV_FILE=$(variable_expansion "${HELMFILE_ENV_FILE}")
@@ -412,6 +416,11 @@ case $phase in
         INTERNAL_HELM_API_VERSIONS="${INTERNAL_HELM_API_VERSIONS} --api-versions=$v"
       done
       INTERNAL_HELM_TEMPLATE_OPTIONS="${INTERNAL_HELM_TEMPLATE_OPTIONS} ${INTERNAL_HELM_API_VERSIONS}"
+    fi
+
+    if [[ -f "${HELMFILE_CUSTOM_TEMPLATE_SCRIPT}" ]]; then
+      ./${HELMFILE_CUSTOM_TEMPLATE_SCRIPT}
+      exit 0
     fi
 
     # TODO: support post process pipeline here
