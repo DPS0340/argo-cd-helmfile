@@ -202,8 +202,13 @@ if [[ "${HELMFILE_INIT_SCRIPT_FILE}" ]]; then
   HELMFILE_INIT_SCRIPT_FILE=$(variable_expansion "${HELMFILE_INIT_SCRIPT_FILE}")
 fi
 
-if [[ -z "${HELMFILE_CUSTOM_TEMPLATE_SCRIPT}" ]]; then
-  HELMFILE_CUSTOM_TEMPLATE_SCRIPT="preprocess-helmfile-template"
+: "${HELMFILE_CUSTOM_TEMPLATE_SCRIPT:="preprocess-helmfile-template"}"
+if [[ "${HELMFILE_CUSTOM_TEMPLATE_SCRIPT}" ]]; then
+  HELMFILE_CUSTOM_TEMPLATE_SCRIPT=$(variable_expansion "${HELMFILE_CUSTOM_TEMPLATE_SCRIPT}")
+fi
+
+if [[ "${HELMFILE_CUSTOM_TEMPLATE_SCRIPT_OUTPUT_FILE}" ]]; then
+  HELMFILE_CUSTOM_TEMPLATE_SCRIPT_OUTPUT_FILE=$(variable_expansion "${HELMFILE_CUSTOM_TEMPLATE_SCRIPT_OUTPUT_FILE}")
 fi
 
 : "${HELMFILE_ENV_FILE:=".argo-cd-helmfile-env"}"
@@ -306,193 +311,197 @@ export HOME="${HELM_HOME}"
 echoerr "starting ${phase}"
 
 case $phase in
-  "init")
-    truthy_test "${HELMFILE_CACHE_CLEANUP:-false}" && {
-      ${helmfile} cache cleanup
-    }
+"init")
+  truthy_test "${HELMFILE_CACHE_CLEANUP:-false}" && {
+    ${helmfile} cache cleanup
+  }
 
-    if [[ -v HELMFILE_HELMFILE ]]; then
-      rm -rf "${HELMFILE_HELMFILE_HELMFILED}"
-      mkdir -p "${HELMFILE_HELMFILE_HELMFILED}"
+  if [[ -v HELMFILE_HELMFILE ]]; then
+    rm -rf "${HELMFILE_HELMFILE_HELMFILED}"
+    mkdir -p "${HELMFILE_HELMFILE_HELMFILED}"
 
-      case "${HELMFILE_HELMFILE_STRATEGY}" in
-        "INCLUDE")
+    case "${HELMFILE_HELMFILE_STRATEGY}" in
+    "INCLUDE")
 
-          count=0
+      count=0
 
-          [[ -f "helmfile.yaml" ]] && ((count++))
-          [[ -f "helmfile.yaml.gotmpl" ]] && ((count++))
-          [[ -d "helmfile.d" ]] && ((count++))
+      [[ -f "helmfile.yaml" ]] && ((count++))
+      [[ -f "helmfile.yaml.gotmpl" ]] && ((count++))
+      [[ -d "helmfile.d" ]] && ((count++))
 
-          if [[ $count -gt 1 ]]; then
-            echoerr "You can have either helmfile.yaml, helmfile.yaml.gotmpl, or helmfile.d, but not more than one"
-          fi
+      if [[ $count -gt 1 ]]; then
+        echoerr "You can have either helmfile.yaml, helmfile.yaml.gotmpl, or helmfile.d, but not more than one"
+      fi
 
-          if [[ -f "helmfile.yaml" ]]; then
-            cp -a "helmfile.yaml" "${HELMFILE_HELMFILE_HELMFILED}/"
-          fi
+      if [[ -f "helmfile.yaml" ]]; then
+        cp -a "helmfile.yaml" "${HELMFILE_HELMFILE_HELMFILED}/"
+      fi
 
-          if [[ -f "helmfile.yaml.gotmpl" ]]; then
-            cp -a "helmfile.yaml.gotmpl" "${HELMFILE_HELMFILE_HELMFILED}/"
-          fi
+      if [[ -f "helmfile.yaml.gotmpl" ]]; then
+        cp -a "helmfile.yaml.gotmpl" "${HELMFILE_HELMFILE_HELMFILED}/"
+      fi
 
-          if [[ -d "helmfile.d" ]]; then
-            cp -ar "helmfile.d/"* "${HELMFILE_HELMFILE_HELMFILED}/"
-          fi
-          ;;
-        "REPLACE") ;;
+      if [[ -d "helmfile.d" ]]; then
+        cp -ar "helmfile.d/"* "${HELMFILE_HELMFILE_HELMFILED}/"
+      fi
+      ;;
+    "REPLACE") ;;
 
-        *)
-          echoerr "invalid \$HELMFILE_HELMFILE_STRATEGY: ${HELMFILE_HELMFILE_STRATEGY}"
-          exit 1
-          ;;
-      esac
+    *)
+      echoerr "invalid \$HELMFILE_HELMFILE_STRATEGY: ${HELMFILE_HELMFILE_STRATEGY}"
+      exit 1
+      ;;
+    esac
 
-      # ensure custom file is processed last
-      echo "${HELMFILE_HELMFILE}" >"${HELMFILE_HELMFILE_HELMFILED}/ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ__argocd__helmfile__.yaml"
-    fi
+    # ensure custom file is processed last
+    echo "${HELMFILE_HELMFILE}" >"${HELMFILE_HELMFILE_HELMFILED}/ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ__argocd__helmfile__.yaml"
+  fi
 
-    if [[ ${helm_major_version} -eq 2 ]]; then
-      ${helm} init --client-only
-    fi
+  if [[ ${helm_major_version} -eq 2 ]]; then
+    ${helm} init --client-only
+  fi
 
-    if [ ! -z "${HELMFILE_INIT_SCRIPT_FILE}" ]; then
-      HELMFILE_INIT_SCRIPT_FILE=$(realpath "${HELMFILE_INIT_SCRIPT_FILE}")
-      bash "${HELMFILE_INIT_SCRIPT_FILE}"
-    fi
+  if [ ! -z "${HELMFILE_INIT_SCRIPT_FILE}" ]; then
+    HELMFILE_INIT_SCRIPT_FILE=$(realpath "${HELMFILE_INIT_SCRIPT_FILE}")
+    bash "${HELMFILE_INIT_SCRIPT_FILE}"
+  fi
 
-    # using app revision here to ensure if the git repo is updated the cache is busted
-    cache_key="plugin-${phase}-repos-${ARGOCD_APP_REVISION}"
+  # using app revision here to ensure if the git repo is updated the cache is busted
+  cache_key="plugin-${phase}-repos-${ARGOCD_APP_REVISION}"
 
-    if cache_is_expired "${cache_key}" "${HELMFILE_REPO_CACHE_TIMEOUT}"; then
-      # https://github.com/roboll/helmfile/issues/1064
-      ${helmfile} repos
-      cache_set_time "${cache_key}"
-      # TODO: fetch here?
-      #${helmfile} fetch
+  if cache_is_expired "${cache_key}" "${HELMFILE_REPO_CACHE_TIMEOUT}"; then
+    # https://github.com/roboll/helmfile/issues/1064
+    ${helmfile} repos
+    cache_set_time "${cache_key}"
+    # TODO: fetch here?
+    #${helmfile} fetch
+  else
+    echoerr "skipping repos update due to cache"
+  fi
+  ;;
+
+"generate")
+  INTERNAL_HELMFILE_TEMPLATE_OPTIONS=
+  INTERNAL_HELM_TEMPLATE_OPTIONS=
+
+  # helmfile args
+  # --environment default, -e default       specify the environment name. defaults to default
+  # --namespace value, -n value             Set namespace. Uses the namespace set in the context by default, and is available in templates as {{ .Namespace }}
+  # --selector value, -l value              Only run using the releases that match labels. Labels can take the form of foo=bar or foo!=bar.
+  #                                         A release must match all labels in a group in order to be used. Multiple groups can be specified at once.
+  #                                         --selector tier=frontend,tier!=proxy --selector tier=backend. Will match all frontend, non-proxy releases AND all backend releases.
+  #                                         The name of a release can be used as a label. --selector name=myrelease
+  # --allow-no-matching-release             Do not exit with an error code if the provided selector has no matching releases.
+
+  # apply custom args passed from helmfile down to helm
+  # https://github.com/helm/helm/pull/7054/files (--is-upgrade added to v3)
+  # --args --kube-version=1.16,--api-versions=foo
+  #
+  # v2
+  # --is-upgrade               set .Release.IsUpgrade instead of .Release.IsInstall
+  # --kube-version string      kubernetes version used as Capabilities.KubeVersion.Major/Minor (default "1.9")
+  # v3
+  # -a, --api-versions stringArray   Kubernetes api versions used for Capabilities.APIVersions
+  # --no-hooks                   prevent hooks from running during install
+  # --skip-crds                  if set, no CRDs will be installed. By default, CRDs are installed if not already present
+
+  if [[ ${helm_major_version} -eq 2 && "${KUBE_VERSION}" ]]; then
+    INTERNAL_HELM_TEMPLATE_OPTIONS="${INTERNAL_HELM_TEMPLATE_OPTIONS} --kube-version=${KUBE_VERSION}"
+  fi
+
+  # support added for --kube-version in 3.6
+  # https://github.com/helm/helm/pull/9040
+  if [[ ${helm_major_version} -eq 3 && ${helm_minor_version} -ge 6 && "${KUBE_VERSION}" ]]; then
+    INTERNAL_HELM_TEMPLATE_OPTIONS="${INTERNAL_HELM_TEMPLATE_OPTIONS} --kube-version=${KUBE_VERSION}"
+  fi
+
+  if [[ ${helm_major_version} -eq 3 && "${KUBE_API_VERSIONS}" ]]; then
+    INTERNAL_HELM_API_VERSIONS=""
+    for v in ${KUBE_API_VERSIONS//,/ }; do
+      INTERNAL_HELM_API_VERSIONS="${INTERNAL_HELM_API_VERSIONS} --api-versions=$v"
+    done
+    INTERNAL_HELM_TEMPLATE_OPTIONS="${INTERNAL_HELM_TEMPLATE_OPTIONS} ${INTERNAL_HELM_API_VERSIONS}"
+  fi
+
+  if [[ -f "${HELMFILE_CUSTOM_TEMPLATE_SCRIPT}" ]]; then
+    if [[ -f "${HELMFILE_CUSTOM_TEMPLATE_SCRIPT_OUTPUT_FILE}" ]]; then
+      ./${HELMFILE_CUSTOM_TEMPLATE_SCRIPT} 1>&2
+      exec cat ${HELMFILE_CUSTOM_TEMPLATE_SCRIPT_OUTPUT_FILE}
     else
-      echoerr "skipping repos update due to cache"
+      exec ./${HELMFILE_CUSTOM_TEMPLATE_SCRIPT}
     fi
-    ;;
+  fi
 
-  "generate")
-    INTERNAL_HELMFILE_TEMPLATE_OPTIONS=
-    INTERNAL_HELM_TEMPLATE_OPTIONS=
+  # TODO: support post process pipeline here
+  ${helmfile} \
+    template \
+    --skip-deps ${INTERNAL_HELMFILE_TEMPLATE_OPTIONS} \
+    --args "${INTERNAL_HELM_TEMPLATE_OPTIONS} ${HELM_TEMPLATE_OPTIONS}" \
+    ${HELMFILE_TEMPLATE_OPTIONS}
+  ;;
 
-    # helmfile args
-    # --environment default, -e default       specify the environment name. defaults to default
-    # --namespace value, -n value             Set namespace. Uses the namespace set in the context by default, and is available in templates as {{ .Namespace }}
-    # --selector value, -l value              Only run using the releases that match labels. Labels can take the form of foo=bar or foo!=bar.
-    #                                         A release must match all labels in a group in order to be used. Multiple groups can be specified at once.
-    #                                         --selector tier=frontend,tier!=proxy --selector tier=backend. Will match all frontend, non-proxy releases AND all backend releases.
-    #                                         The name of a release can be used as a label. --selector name=myrelease
-    # --allow-no-matching-release             Do not exit with an error code if the provided selector has no matching releases.
-
-    # apply custom args passed from helmfile down to helm
-    # https://github.com/helm/helm/pull/7054/files (--is-upgrade added to v3)
-    # --args --kube-version=1.16,--api-versions=foo
-    #
-    # v2
-    # --is-upgrade               set .Release.IsUpgrade instead of .Release.IsInstall
-    # --kube-version string      kubernetes version used as Capabilities.KubeVersion.Major/Minor (default "1.9")
-    # v3
-    # -a, --api-versions stringArray   Kubernetes api versions used for Capabilities.APIVersions
-    # --no-hooks                   prevent hooks from running during install
-    # --skip-crds                  if set, no CRDs will be installed. By default, CRDs are installed if not already present
-
-    if [[ ${helm_major_version} -eq 2 && "${KUBE_VERSION}" ]]; then
-      INTERNAL_HELM_TEMPLATE_OPTIONS="${INTERNAL_HELM_TEMPLATE_OPTIONS} --kube-version=${KUBE_VERSION}"
-    fi
-
-    # support added for --kube-version in 3.6
-    # https://github.com/helm/helm/pull/9040
-    if [[ ${helm_major_version} -eq 3 && ${helm_minor_version} -ge 6 && "${KUBE_VERSION}" ]]; then
-      INTERNAL_HELM_TEMPLATE_OPTIONS="${INTERNAL_HELM_TEMPLATE_OPTIONS} --kube-version=${KUBE_VERSION}"
-    fi
-
-    if [[ ${helm_major_version} -eq 3 && "${KUBE_API_VERSIONS}" ]]; then
-      INTERNAL_HELM_API_VERSIONS=""
-      for v in ${KUBE_API_VERSIONS//,/ }; do
-        INTERNAL_HELM_API_VERSIONS="${INTERNAL_HELM_API_VERSIONS} --api-versions=$v"
-      done
-      INTERNAL_HELM_TEMPLATE_OPTIONS="${INTERNAL_HELM_TEMPLATE_OPTIONS} ${INTERNAL_HELM_API_VERSIONS}"
-    fi
-
-    if [[ -f "${HELMFILE_CUSTOM_TEMPLATE_SCRIPT}" ]]; then
-      ./${HELMFILE_CUSTOM_TEMPLATE_SCRIPT}
+"discover")
+  # https://github.com/argoproj/argo-cd/issues/4831
+  # discovery by default is not executed in the ARGOCD_APP_SOURCE_PATH
+  # discovery broken in 2.7.4
+  if [[ ! -z "${HELMFILE_DISCOVERY_RESPONSE}" ]]; then
+    truthy_test "${HELMFILE_DISCOVERY_RESPONSE}" && {
+      echo "forced discovery response: enabled"
       exit 0
-    fi
+    } || {
+      echo "forced discovery response: disabled"
+      exit 1
+    }
+  fi
 
-    # TODO: support post process pipeline here
-    ${helmfile} \
-      template \
-      --skip-deps ${INTERNAL_HELMFILE_TEMPLATE_OPTIONS} \
-      --args "${INTERNAL_HELM_TEMPLATE_OPTIONS} ${HELM_TEMPLATE_OPTIONS}" \
-      ${HELMFILE_TEMPLATE_OPTIONS}
-    ;;
+  if [[ "${HELMFILE_GLOBAL_OPTIONS}" == *--file* ]]; then
+    echo "custom file path provided, assumed proper"
+    exit 0
+  fi
 
-  "discover")
-    # https://github.com/argoproj/argo-cd/issues/4831
-    # discovery by default is not executed in the ARGOCD_APP_SOURCE_PATH
-    # discovery broken in 2.7.4
-    if [[ ! -z "${HELMFILE_DISCOVERY_RESPONSE}" ]]; then
-      truthy_test "${HELMFILE_DISCOVERY_RESPONSE}" && {
-        echo "forced discovery response: enabled"
-        exit 0
-      } || {
-        echo "forced discovery response: disabled"
-        exit 1
-      }
-    fi
+  if [[ "${HELMFILE_GLOBAL_OPTIONS}" == *-f* ]]; then
+    echo "custom file path provided, assumed proper"
+    exit 0
+  fi
 
-    if [[ "${HELMFILE_GLOBAL_OPTIONS}" == *--file* ]]; then
-      echo "custom file path provided, assumed proper"
-      exit 0
-    fi
+  if [[ -v HELMFILE_HELMFILE ]]; then
+    echo "complete helmfile provided, assumed proper"
+    exit 0
+  fi
 
-    if [[ "${HELMFILE_GLOBAL_OPTIONS}" == *-f* ]]; then
-      echo "custom file path provided, assumed proper"
-      exit 0
-    fi
+  if [[ -f "helmfile.yaml" ]]; then
+    echo "valid helmfile content discovered"
+    exit 0
+  fi
 
-    if [[ -v HELMFILE_HELMFILE ]]; then
-      echo "complete helmfile provided, assumed proper"
-      exit 0
-    fi
+  if [[ -f "helmfile.yaml.gotmpl" ]]; then
+    echo "valid helmfile content discovered"
+    exit 0
+  fi
 
-    if [[ -f "helmfile.yaml" ]]; then
-      echo "valid helmfile content discovered"
-      exit 0
-    fi
+  if [[ -d "helmfile.d" ]]; then
+    echo "valid helmfile content discovered"
+    exit 0
+  fi
 
-    if [[ -f "helmfile.yaml.gotmpl" ]]; then
-      echo "valid helmfile content discovered"
-      exit 0
-    fi
+  # provides false positive if --file or -f is omitted
+  #test -n "$(find . -type d -name "helmfile.d")" && {
+  #  echo "valid helmfile content discovered"
+  #  exit 0
+  #}
 
-    if [[ -d "helmfile.d" ]]; then
-      echo "valid helmfile content discovered"
-      exit 0
-    fi
+  # provides false positive if --file or -f is omitted
+  #test -n "$(find . -type f -name "helmfile.yaml")" && {
+  #  echo "valid helmfile content discovered"
+  #  exit 0
+  #}
 
-    # provides false positive if --file or -f is omitted
-    #test -n "$(find . -type d -name "helmfile.d")" && {
-    #  echo "valid helmfile content discovered"
-    #  exit 0
-    #}
+  echo "no valid helmfile content discovered"
+  exit 1
+  ;;
 
-    # provides false positive if --file or -f is omitted
-    #test -n "$(find . -type f -name "helmfile.yaml")" && {
-    #  echo "valid helmfile content discovered"
-    #  exit 0
-    #}
-
-    echo "no valid helmfile content discovered"
-    exit 1
-    ;;
-
-  "parameters")
-    cat <<-"EOF"
+"parameters")
+  cat <<-"EOF"
 [
   {
     "name": "HELM_TEMPLATE_OPTIONS",
@@ -539,10 +548,10 @@ case $phase in
 ]
 EOF
 
-    exit 0
+  exit 0
 
-    # not including these are params as they are explicitly used as ENV vars
-    read -r -d '' USE_AS_ENVS_TO_NOT_CONFUSE_PEOPLE <<'EOF'
+  # not including these are params as they are explicitly used as ENV vars
+  read -r -d '' USE_AS_ENVS_TO_NOT_CONFUSE_PEOPLE <<'EOF'
 [
   {
     "name": "HELM_BINARY",
@@ -572,13 +581,13 @@ EOF
 ]
 EOF
 
-    exit 0
-    ;;
+  exit 0
+  ;;
 
-  *)
-    echoerr "invalid invocation"
-    exit 1
-    ;;
+*)
+  echoerr "invalid invocation"
+  exit 1
+  ;;
 esac
 
 echoerr "finishing ${phase}"
